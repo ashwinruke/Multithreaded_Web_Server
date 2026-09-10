@@ -3,7 +3,6 @@ from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
 app = Flask(__name__)
-print("Testing for driftwatch")
 
 @app.route("/api/user", methods=["POST"])
 def user():
