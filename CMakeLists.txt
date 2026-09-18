@@ -12,16 +12,21 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O2")
 
 find_package(Threads REQUIRED)
 
-add_executable(${PROJECT_NAME}
-    src/main.cpp
-    src/server.cpp
-    src/http_parser.cpp
-    src/http_response.cpp
+add_library(server_core STATIC
+    src/http.cpp
+    src/router.cpp
+    src/handlers.cpp
+    src/net.cpp
+    src/connection_handler.cpp
+    src/pool_loop.cpp
+    src/reactor_loop.cpp
     src/file_manager.cpp
     src/lru_cache.cpp
     src/logger.cpp
     src/utils.cpp
 )
+target_include_directories(server_core PUBLIC include)
+target_link_libraries(server_core PUBLIC Threads::Threads)
 
-target_include_directories(${PROJECT_NAME} PRIVATE include)
-target_link_libraries(${PROJECT_NAME} PRIVATE Threads::Threads)
+add_executable(multithreaded-server src/main.cpp)
+target_link_libraries(multithreaded-server PRIVATE server_core)
