@@ -1,123 +1,91 @@
-#include "../include/logger.h"
+#include "logger.h"
+#include "utils.h"
+#include <filesystem>
+#include <iomanip>
 #include <iostream>
 #include <sstream>
-#include <filesystem>
 
 Logger::Logger(const std::string& logFile)
-    : filePath("../logs/" + logFile) {
-    hasCreatedLogFile = createLogFileIfNotExists(filePath);
-    if (hasCreatedLogFile) {
-        logFileStream.open(filePath, std::ios::app);
-        if (!logFileStream.is_open()) {
-            std::cerr << "Failed to open log file at " << filePath << "\n";
-        }
-        pthread_mutex_init(&logMutex, nullptr);
-        pthread_cond_init(&logCondition, nullptr);
-        pthread_create(&logThread, nullptr, logThreadRoutine, this);
+    : filePath(projectRoot() + "/logs/" + logFile) {
+    std::error_code errorCode;
+    std::filesystem::create_directories(std::filesystem::path(filePath).parent_path(), errorCode);
+
+    logFileStream.open(filePath, std::ios::app);
+    if (!logFileStream.is_open()) {
+        std::cerr << "Failed to open log file at " << filePath << "\n";
+        return;
     }
+    running = true;
+    logThread = std::thread(&Logger::drainLoop, this);
 }
 
 Logger::~Logger() {
-    cleanup();
-}
-
-bool Logger::createLogFileIfNotExists(const std::string& filePath) {
-    std::filesystem::path logFilePath(filePath);
-    if (std::filesystem::exists(logFilePath)) {
-        return true;
+    {
+        std::lock_guard<std::mutex> lock(logMutex);
+        running = false;
     }
-    std::filesystem::create_directories(logFilePath.parent_path());
-    std::ofstream createFileStream(logFilePath);
-    if (!createFileStream) {
-        std::cerr << "Failed to create log file at " << filePath << "\n";
-        return false;
+    logCondition.notify_all();
+    if (logThread.joinable()) {
+        logThread.join();
     }
-    return true;
-}
-
-void* Logger::logThreadRoutine(void* loggerPtr) {
-    Logger* logger = static_cast<Logger*>(loggerPtr);
-    while (true) {
-        std::string logLine = logger->dequeueLogRequest();
-        if (!logLine.empty()) {
-            logger->writeLog(logLine);
-        }
-    }
-    return nullptr;
-}
-
-std::string Logger::dequeueLogRequest() {
-    std::string logLine;
-    pthread_mutex_lock(&logMutex);
-    while (logQueue.empty()) {
-        pthread_cond_wait(&logCondition, &logMutex);
-    }
-    if (!logQueue.empty()) {
-        logLine = logQueue.front();
-        logQueue.pop();
-    }
-    pthread_mutex_unlock(&logMutex);
-    return logLine;
-}
-
-void Logger::log(LogLevel level, const std::string& message) {
-    if (hasCreatedLogFile) {
-        std::string logLine = getTime() + " " + getLogLevelStr(level) + " " + message + "\n";
-        pthread_mutex_lock(&logMutex);
-        logQueue.push(logLine);
-        pthread_mutex_unlock(&logMutex);
-        pthread_cond_signal(&logCondition);
-    }
-}
-
-void Logger::log(LogData logData) {
-    if (hasCreatedLogFile) {
-        std::string logLine = logData.ip + " - " + getTime() + " " + getLogLevelStr(logData.level) + " \"" +
-                              logData.startLine + "\" " + logData.responseCode + " " + logData.responseSize + "\n";
-        pthread_mutex_lock(&logMutex);
-        logQueue.push(logLine);
-        pthread_mutex_unlock(&logMutex);
-        pthread_cond_signal(&logCondition);
-    }
-}
-
-void Logger::writeLog(const std::string& logLine) {
     if (logFileStream.is_open()) {
+        logFileStream.close();
+    }
+}
+
+void Logger::drainLoop() {
+    while (true) {
+        std::unique_lock<std::mutex> lock(logMutex);
+        logCondition.wait(lock, [this] { return !logQueue.empty() || !running; });
+
+        if (logQueue.empty() && !running) {
+            return;  // stopped and nothing left to flush
+        }
+
+        std::string logLine = std::move(logQueue.front());
+        logQueue.pop();
+        lock.unlock();
+
         logFileStream << logLine;
         logFileStream.flush();
     }
-    else {
-        std::cerr << "Failed to open log file at " << filePath << "\n";
+}
+
+void Logger::enqueue(std::string logLine) {
+    if (!running) {
+        return;
     }
+    {
+        std::lock_guard<std::mutex> lock(logMutex);
+        logQueue.push(std::move(logLine));
+    }
+    logCondition.notify_one();
+}
+
+void Logger::log(LogLevel level, const std::string& message) {
+    enqueue(getTime() + " " + getLogLevelStr(level) + " " + message + "\n");
+}
+
+void Logger::log(const LogData& logData) {
+    enqueue(logData.ip + " - " + getTime() + " " + getLogLevelStr(logData.level) + " \"" +
+            logData.startLine + "\" " + logData.responseCode + " " + logData.responseSize + "\n");
 }
 
 std::string Logger::getTime() {
-    std::time_t currentTime = std::time(nullptr);
-    std::stringstream timeStream;
-    timeStream << std::put_time(std::localtime(&currentTime), "%Y-%m-%d %H:%M:%S");
+    const std::time_t currentTime = std::time(nullptr);
+    std::tm timeParts{};
+    localtime_r(&currentTime, &timeParts);
+    std::ostringstream timeStream;
+    timeStream << std::put_time(&timeParts, "%Y-%m-%d %H:%M:%S");
     return timeStream.str();
 }
 
 std::string Logger::getLogLevelStr(LogLevel level) {
     switch (level) {
-        case LogLevel::DEBUG:
-            return "[DEBUG]";
-        case LogLevel::INFO:
-            return "[INFO]";
-        case LogLevel::WARNING:
-            return "[WARNING]";
-        case LogLevel::ERR:
-            return "[ERROR]";
-        default:
-            return "";
-    }
-}
-
-void Logger::cleanup() {
-    pthread_join(logThread, nullptr);
-    pthread_mutex_destroy(&logMutex);
-    pthread_cond_destroy(&logCondition);
-    if (logFileStream.is_open()) {
-        logFileStream.close();
+        case LogLevel::DEBUG:   return "[DEBUG]";
+        case LogLevel::INFO:    return "[INFO]";
+        case LogLevel::WARNING: return "[WARNING]";
+        case LogLevel::ERR:     return "[ERROR]";
+        default:                return "";
     }
 }

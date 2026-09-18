@@ -1,118 +1,138 @@
-#include "../include/server.h"
-#include <cstdio>
-#include <cstdlib>
-#include <format>
+#include "server.h"
+#include <cerrno>
+#include <cstring>
 #include <string>
+#include <vector>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+
+namespace {
+// send() can write fewer bytes than asked for, so loop until the whole
+// response is out or the peer goes away.
+bool sendAll(int socket, const std::string& data) {
+    size_t sent = 0;
+    while (sent < data.size()) {
+        ssize_t written = ::send(socket, data.data() + sent, data.size() - sent, MSG_NOSIGNAL);
+        if (written <= 0) {
+            if (written < 0 && errno == EINTR) {
+                continue;
+            }
+            return false;
+        }
+        sent += static_cast<size_t>(written);
+    }
+    return true;
+}
+}  // namespace
 
 Server::Server(const std::string& serverIP, int serverPort, int maxThreads, int cacheCapacity)
     : serverIP(serverIP), serverPort(serverPort), maxThreads(maxThreads),
-    http_response(cacheCapacity), logger("server.log") {}
+      http_response(cacheCapacity), logger("server.log") {
+    pthread_mutex_init(&mutex, nullptr);
+    pthread_cond_init(&condition, nullptr);
+}
 
 Server::~Server() {
     stop();
 }
 
 void Server::start() {
-    if (isRunning) {
+    if (isRunning.exchange(true)) {
         logger.log(LogLevel::ERR, "Server is already running");
         return;
     }
 
-    isRunning = true;
-    initSocket();
+    if (!initSocket()) {
+        isRunning = false;
+        return;
+    }
     initThreadPool();
-    logger.log(LogLevel::INFO, "Server running on IP: " + serverIP + ", port: " + std::to_string(serverPort));
+    logger.log(LogLevel::INFO, "Server running on " + serverIP + ":" + std::to_string(serverPort));
 
     while (isRunning) {
-        SOCKET clientSocket = acceptClientConnection();
-        if (clientSocket != INVALID_SOCKET) {
+        int clientSocket = acceptClientConnection();
+        if (clientSocket >= 0) {
             enqueueClientRequest(clientSocket);
         }
     }
 }
 
-void Server::initSocket() {
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        logger.log(LogLevel::ERR, "Failed to create server Winsock on port " + std::to_string(serverPort));
-        return;
+bool Server::initSocket() {
+    serverSocket = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (serverSocket < 0) {
+        logger.log(LogLevel::ERR, std::string("Failed to create server socket: ") + std::strerror(errno));
+        return false;
     }
 
-    serverSocket = socket(AF_INET, SOCK_STREAM, 0);
-    if (serverSocket == INVALID_SOCKET) {
-        logger.log(LogLevel::ERR, "Failed to create server socket on port " + std::to_string(serverPort));
-        WSACleanup();
-        return;
-    }
+    // Without SO_REUSEADDR the port stays in TIME_WAIT for ~60s after a restart.
+    int reuse = 1;
+    ::setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
 
     serverAddr.sin_family = AF_INET;
-    serverAddr.sin_port = htons(serverPort);
-    serverAddr.sin_addr.s_addr =  inet_addr(serverIP.c_str());
-    
-    if (bind(serverSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
-        logger.log(LogLevel::ERR, "Failed to bind server socket on port " + std::to_string(serverPort));
-        stop();
-        return;
+    serverAddr.sin_port = htons(static_cast<uint16_t>(serverPort));
+    if (::inet_pton(AF_INET, serverIP.c_str(), &serverAddr.sin_addr) != 1) {
+        logger.log(LogLevel::ERR, "Invalid server IP: " + serverIP);
+        return false;
     }
 
-    // set the server's socket state to listen
-    if (listen(serverSocket, SOMAXCONN) == SOCKET_ERROR) {
-        logger.log(LogLevel::ERR, "Failed to listen on server socket on port " + std::to_string(serverPort));
-        stop();
-        return;
+    if (::bind(serverSocket, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr)) < 0) {
+        logger.log(LogLevel::ERR, std::string("Failed to bind port ") + std::to_string(serverPort) + ": " + std::strerror(errno));
+        return false;
     }
+
+    if (::listen(serverSocket, SOMAXCONN) < 0) {
+        logger.log(LogLevel::ERR, std::string("Failed to listen: ") + std::strerror(errno));
+        return false;
+    }
+    return true;
 }
 
 void Server::initThreadPool() {
-    pthread_mutex_init(&mutex, nullptr);
-    pthread_cond_init(&condition, nullptr);
-    addWorkerThread();
-}
-
-void Server::addWorkerThread() {
-    pthread_t thread;
-    pthread_create(&thread, nullptr, workerThreadRoutine, this);
-    pthread_mutex_lock(&mutex);
-    threadQueue.push(thread);
-    pthread_mutex_unlock(&mutex);
+    // Fixed-size pool: all workers start up front and block on the condition
+    // variable until work arrives.
+    for (int i = 0; i < maxThreads; ++i) {
+        pthread_t thread;
+        if (pthread_create(&thread, nullptr, workerThreadRoutine, this) == 0) {
+            workerThreads.push_back(thread);
+        }
+    }
 }
 
 void* Server::workerThreadRoutine(void* serverPtr) {
     Server* server = static_cast<Server*>(serverPtr);
-    while (server->isRunning) {
-        SOCKET clientSocket = server->dequeueClientRequest();
-        if (clientSocket != INVALID_SOCKET) {
-            server->processClientRequest(clientSocket);
-            closesocket(clientSocket);
+    while (true) {
+        int clientSocket = server->dequeueClientRequest();
+        if (clientSocket < 0) {
+            break;  // shutting down
         }
+        server->processClientRequest(clientSocket);
+        ::close(clientSocket);
     }
     return nullptr;
 }
 
-SOCKET Server::acceptClientConnection() {
-    return accept(serverSocket, nullptr, nullptr);
+int Server::acceptClientConnection() {
+    int clientSocket = ::accept(serverSocket, nullptr, nullptr);
+    if (clientSocket < 0 && isRunning && errno != EINTR && errno != EBADF) {
+        logger.log(LogLevel::ERR, std::string("accept() failed: ") + std::strerror(errno));
+    }
+    return clientSocket;
 }
 
-void Server::enqueueClientRequest(SOCKET clientSocket) {
+void Server::enqueueClientRequest(int clientSocket) {
     pthread_mutex_lock(&mutex);
     clientQueue.push(clientSocket);
-    pthread_mutex_unlock(&mutex);
-
-    // send a signal to waiting threads
     pthread_cond_signal(&condition);
-    if (threadQueue.size() < maxThreads) {
-        addWorkerThread();
-    }
+    pthread_mutex_unlock(&mutex);
 }
 
-SOCKET Server::dequeueClientRequest() {
-    SOCKET clientSocket = INVALID_SOCKET;
+int Server::dequeueClientRequest() {
     pthread_mutex_lock(&mutex);
     while (clientQueue.empty() && isRunning) {
-        // release the mutex lock and wait until signaled
         pthread_cond_wait(&condition, &mutex);
     }
-
+    int clientSocket = -1;
     if (!clientQueue.empty()) {
         clientSocket = clientQueue.front();
         clientQueue.pop();
@@ -121,53 +141,56 @@ SOCKET Server::dequeueClientRequest() {
     return clientSocket;
 }
 
-void Server::processClientRequest(SOCKET clientSocket) {
-    constexpr int bufferSize = 1024;
-    std::vector<char> buffer(bufferSize, '\0');
-    int bytesRead = recv(clientSocket, buffer.data(), bufferSize - 1, 0);
-    if (bytesRead == 0) {
+void Server::processClientRequest(int clientSocket) {
+    constexpr size_t bufferSize = 8192;
+    std::vector<char> buffer(bufferSize);
+    ssize_t bytesRead = ::recv(clientSocket, buffer.data(), bufferSize, 0);
+    if (bytesRead <= 0) {
         return;
     }
 
-    std::string request(buffer.data());
+    std::string request(buffer.data(), static_cast<size_t>(bytesRead));
     std::string response = http_response.makeResponse(request);
-    send(clientSocket, response.c_str(), response.size(), 0);
-    
+    sendAll(clientSocket, response);
+
     logger.log(LogData(http_parser.getHeaderFieldVal(request, "Host"), LogLevel::INFO,
-               http_parser.getStartLine(request), http_parser.getResponseCode(response),
-               http_parser.getHeaderFieldVal(response, "Content-Length")));
-}
-
-void Server::removeWorkerThread() {
-    pthread_t thread;
-    pthread_mutex_lock(&mutex);
-    if (!threadQueue.empty()) {
-        thread = threadQueue.front();
-        threadQueue.pop();
-    }
-
-    pthread_mutex_unlock(&mutex);
-    if (thread != 0) {
-        pthread_cancel(thread);
-        pthread_detach(thread);
-    }
+                       http_parser.getStartLine(request), http_parser.getResponseCode(response),
+                       http_parser.getHeaderFieldVal(response, "Content-Length")));
 }
 
 void Server::stop() {
-    isRunning = false;
+    if (!isRunning.exchange(false)) {
+        return;
+    }
     cleanup();
 }
 
 void Server::cleanup() {
-    while (!threadQueue.empty()) {
-        removeWorkerThread();
+    // Closing the listening socket unblocks accept() in start().
+    if (serverSocket >= 0) {
+        ::shutdown(serverSocket, SHUT_RDWR);
+        ::close(serverSocket);
+        serverSocket = -1;
     }
+
+    // Wake every worker so it sees isRunning == false and returns.
+    pthread_mutex_lock(&mutex);
+    pthread_cond_broadcast(&condition);
+    pthread_mutex_unlock(&mutex);
+
+    for (pthread_t thread : workerThreads) {
+        pthread_join(thread, nullptr);
+    }
+    workerThreads.clear();
+
+    pthread_mutex_lock(&mutex);
+    while (!clientQueue.empty()) {
+        ::close(clientQueue.front());
+        clientQueue.pop();
+    }
+    pthread_mutex_unlock(&mutex);
+
+    logger.log(LogLevel::INFO, "Server stopped");
     pthread_mutex_destroy(&mutex);
     pthread_cond_destroy(&condition);
-    closesocket(serverSocket);
-    WSACleanup();
-}
-
-sockaddr_in Server::getServerAddr() {
-    return serverAddr;
 }

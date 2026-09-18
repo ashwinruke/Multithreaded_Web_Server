@@ -1,33 +1,29 @@
 #pragma once
+#include <list>
+#include <mutex>
 #include <string>
 #include <unordered_map>
-#include <memory>
-#include <pthread.h>
+#include <utility>
 
-struct Node {
-    std::string key;
-    std::string value;
-    std::shared_ptr<Node> prev;
-    std::shared_ptr<Node> next;
-
-    Node(const std::string& key, const std::string& value)
-        : key(key), value(value), prev(nullptr), next(nullptr) {}
-};
-
+// Thread-safe LRU cache. std::list gives O(1) splice to the front; the map
+// stores iterators into that list, so lookup and eviction are both O(1).
 class LRUCache {
 public:
-    LRUCache(int capacity);
-    ~LRUCache();
-    std::string get(const std::string& key);
+    explicit LRUCache(size_t capacity);
+
+    bool get(const std::string& key, std::string& value);
     void put(const std::string& key, const std::string& value);
 
-private:
-    int capacity;
-    std::unordered_map<std::string, std::shared_ptr<Node>> cache;
-    std::shared_ptr<Node> head;
-    std::shared_ptr<Node> tail;
-    pthread_mutex_t cacheMutex;
+    size_t hits() const;
+    size_t misses() const;
 
-    void moveToMRU(std::shared_ptr<Node> node);
-    void removeNode(std::shared_ptr<Node> node);
+private:
+    using Entry = std::pair<std::string, std::string>;  // key, value
+
+    size_t capacity;
+    std::list<Entry> entries;                                            // front = most recent
+    std::unordered_map<std::string, std::list<Entry>::iterator> index;
+    mutable std::mutex cacheMutex;
+    size_t hitCount = 0;
+    size_t missCount = 0;
 };

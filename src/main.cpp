@@ -1,62 +1,45 @@
-#include "../include/server.h"
-#include "../include/client.h"
-#include "utils.cpp"
+#include "server.h"
+#include "http_parser.h"
+#include "utils.h"
+#include <csignal>
+#include <cstdlib>
+#include <iostream>
 #include <memory>
-#include <unistd.h>
 
-void* startServer(void* serverPtr) {
-    Server* server = static_cast<Server*>(serverPtr);
-    server->start();
-    return nullptr;
-}
+namespace {
+std::unique_ptr<Server> g_server;
 
-void* makeClientRequest(void* clientPtr) {
-    Client* client = static_cast<Client*>(clientPtr);
-    client->connectToServer();
-    client->sendRequest("GET /index.html HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
-    client->receiveResponse();
-    client->closeConnection();
-    return nullptr;
-}
-
-void simulateConcurrentRequests(sockaddr_in serverAddr, int numClients) {
-    // create client objects across different ports
-    std::vector<std::unique_ptr<Client>> clients;
-    int clientPort = 9000;
-    for (int i=0; i<numClients; ++i) {
-        clients.push_back(std::make_unique<Client>(clientPort, serverAddr));
-        clientPort++;
-    }
-
-    // send client requests
-    std::vector<pthread_t> clientThreads;
-    for (const auto& client : clients) {
-        pthread_t clientThread;
-        pthread_create(&clientThread, nullptr, makeClientRequest, client.get());
-        clientThreads.push_back(clientThread);
-    }
-    
-    // wait for all client threads to finish
-    for (pthread_t clientThread : clientThreads) {
-        pthread_join(clientThread, nullptr);
+void handleSignal(int) {
+    // Only async-signal-safe work belongs here; stop() is called from main.
+    if (g_server) {
+        g_server->stop();
     }
 }
+}  // namespace
 
 int main() {
-    std::unordered_map<std::string, std::string> envVariables = parseEnvFile(".env");
-    std::string serverIP = envVariables["SERVER_IP"];
-    int serverPort = envStrToInt(envVariables["SERVER_PORT"]);
-    int maxThreads = envStrToInt(envVariables["MAX_THREADS"]);
-    int cacheCapacity = envStrToInt(envVariables["CACHE_CAPACITY"]);
+    try {
+        auto env = parseEnvFile(projectRoot() + "/.env");
+        const std::string serverIP = env.count("SERVER_IP") ? env["SERVER_IP"] : "127.0.0.1";
+        const int serverPort = env.count("SERVER_PORT") ? envStrToInt(env["SERVER_PORT"]) : 8080;
+        const int maxThreads = env.count("MAX_THREADS") ? envStrToInt(env["MAX_THREADS"]) : 8;
+        const int cacheCapacity = env.count("CACHE_CAPACITY") ? envStrToInt(env["CACHE_CAPACITY"]) : 64;
 
-    Server server(serverIP, serverPort, maxThreads, cacheCapacity);
-    pthread_t serverThread;
-    pthread_create(&serverThread, nullptr, startServer, &server);
+        HttpParser::setStaticRoot(projectRoot() + "/static");
 
-    usleep(1000);
-    simulateConcurrentRequests(server.getServerAddr(), 5);
+        g_server = std::make_unique<Server>(serverIP, serverPort, maxThreads, cacheCapacity);
 
-    // server.stop();
-    pthread_join(serverThread, nullptr);
-    return 0;
+        std::signal(SIGINT, handleSignal);
+        std::signal(SIGTERM, handleSignal);
+        std::signal(SIGPIPE, SIG_IGN);
+
+        std::cout << "Listening on http://" << serverIP << ":" << serverPort << "\n";
+        g_server->start();
+        g_server.reset();
+    }
+    catch (const std::exception& err) {
+        std::cerr << "Fatal: " << err.what() << "\n";
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
 }

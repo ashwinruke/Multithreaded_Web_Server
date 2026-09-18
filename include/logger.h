@@ -1,8 +1,11 @@
 #pragma once
-#include <string>
+#include <atomic>
+#include <condition_variable>
 #include <fstream>
+#include <mutex>
 #include <queue>
-#include <pthread.h>
+#include <string>
+#include <thread>
 
 enum class LogLevel {
     DEBUG,
@@ -23,27 +26,30 @@ struct LogData {
         : ip(ip), level(level), startLine(startLine), responseCode(responseCode), responseSize(responseSize) {}
 };
 
+// Asynchronous logger: callers push a formatted line onto a queue and return
+// immediately, so no request thread ever blocks on disk I/O.
 class Logger {
 public:
-    Logger(const std::string& logFile);
+    explicit Logger(const std::string& logFile);
     ~Logger();
+
+    Logger(const Logger&) = delete;
+    Logger& operator=(const Logger&) = delete;
+
     void log(LogLevel level, const std::string& message);
-    void log(LogData logData);
-    void cleanup();
-    
+    void log(const LogData& logData);
+
 private:
-    bool hasCreatedLogFile;
-    const std::string filePath;
+    std::string filePath;
     std::ofstream logFileStream;
     std::queue<std::string> logQueue;
-    pthread_t logThread;
-    pthread_mutex_t logMutex;
-    pthread_cond_t logCondition;
+    std::mutex logMutex;
+    std::condition_variable logCondition;
+    std::atomic<bool> running{false};
+    std::thread logThread;
 
-    static void* logThreadRoutine(void* logger);
-    std::string dequeueLogRequest();
-    bool createLogFileIfNotExists(const std::string& filePath);
-    void writeLog(const std::string& logLine);
-    std::string getTime();
-    std::string getLogLevelStr(LogLevel level);
+    void drainLoop();
+    void enqueue(std::string logLine);
+    static std::string getTime();
+    static std::string getLogLevelStr(LogLevel level);
 };

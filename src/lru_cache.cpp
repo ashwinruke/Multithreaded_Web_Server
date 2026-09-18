@@ -1,61 +1,46 @@
-#include "../include/lru_cache.h"
+#include "lru_cache.h"
 
-LRUCache::LRUCache(int capacity)
-    : capacity(capacity) {
-    // head.next points to LRU, tail.prev points to MRU
-    head = std::make_shared<Node>("", "");
-    tail = std::make_shared<Node>("", "");
-    head->next = tail;
-    tail->prev = head;
-    pthread_mutex_init(&cacheMutex, nullptr);
-}
+LRUCache::LRUCache(size_t capacity)
+    : capacity(capacity == 0 ? 1 : capacity) {}
 
-LRUCache::~LRUCache() {
-    pthread_mutex_destroy(&cacheMutex);
-}
-
-std::string LRUCache::get(const std::string& key) {
-    pthread_mutex_lock(&cacheMutex);
-    if (cache.find(key) != cache.end()) {
-        std::shared_ptr<Node> node = cache[key];
-        removeNode(node);
-        moveToMRU(node);
-        pthread_mutex_unlock(&cacheMutex);
-        return node->value;
+bool LRUCache::get(const std::string& key, std::string& value) {
+    std::lock_guard<std::mutex> lock(cacheMutex);
+    auto iterator = index.find(key);
+    if (iterator == index.end()) {
+        ++missCount;
+        return false;
     }
-    pthread_mutex_unlock(&cacheMutex);
-    return "";
+    // Move the hit entry to the front without copying it.
+    entries.splice(entries.begin(), entries, iterator->second);
+    value = iterator->second->second;
+    ++hitCount;
+    return true;
 }
 
 void LRUCache::put(const std::string& key, const std::string& value) {
-    pthread_mutex_lock(&cacheMutex);
-    if (cache.find(key) != cache.end()) {
-        removeNode(cache[key]);
+    std::lock_guard<std::mutex> lock(cacheMutex);
+    auto iterator = index.find(key);
+    if (iterator != index.end()) {
+        iterator->second->second = value;
+        entries.splice(entries.begin(), entries, iterator->second);
+        return;
     }
 
-    std::shared_ptr<Node> node = std::make_shared<Node>(key, value);
-    cache[key] = node;
-    moveToMRU(node);
+    entries.emplace_front(key, value);
+    index[key] = entries.begin();
 
-    if (cache.size() > capacity) {
-        std::shared_ptr<Node> lru = head->next;
-        removeNode(lru);
-        cache.erase(lru->key);
+    if (index.size() > capacity) {
+        index.erase(entries.back().first);
+        entries.pop_back();
     }
-    pthread_mutex_unlock(&cacheMutex);
 }
 
-void LRUCache::moveToMRU(std::shared_ptr<Node> node) {
-    std::shared_ptr<Node> prevNode = tail->prev;
-    prevNode->next = node;
-    node->prev = prevNode;
-    node->next = tail;
-    tail->prev = node;
+size_t LRUCache::hits() const {
+    std::lock_guard<std::mutex> lock(cacheMutex);
+    return hitCount;
 }
 
-void LRUCache::removeNode(std::shared_ptr<Node> node) {
-    std::shared_ptr<Node> prevNode = node->prev;
-    std::shared_ptr<Node> nextNode = node->next;
-    prevNode->next = nextNode;
-    nextNode->prev = prevNode;
+size_t LRUCache::misses() const {
+    std::lock_guard<std::mutex> lock(cacheMutex);
+    return missCount;
 }

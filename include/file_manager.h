@@ -4,8 +4,9 @@
 
 class FileManager {
 public:
-    FileManager(int cacheCapacity);
-    std::string readFile(const std::string& filePath);
+    explicit FileManager(int cacheCapacity);
+
+    std::string readFile(const std::string& filePath, bool& found);
 
 private:
     LRUCache cache;
