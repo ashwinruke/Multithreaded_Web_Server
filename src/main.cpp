@@ -1,5 +1,7 @@
 #include "event_loop.h"
+#include "api.h"
 #include "handlers.h"
+#include "metrics.h"
 #include "logger.h"
 #include "router.h"
 #include "utils.h"
@@ -45,6 +47,8 @@ int main(int argc, char** argv) {
         }
 
         Logger logger("server.log");
+        Metrics metrics;
+        KvStore kvStore;
 
         StaticFileHandler staticFiles(projectRoot() + "/static", config.cacheCapacity);
         Router router;
@@ -53,13 +57,33 @@ int main(int argc, char** argv) {
             return HttpResponse::json(R"({"status":"ok"})");
         });
 
+        // Live server metrics, polled by the dashboard at /.
+        router.add("GET", "/api/stats", [&](const HttpRequest&) {
+            return HttpResponse::json(metrics.toJson(config.mode, config.threads,
+                                                     staticFiles.files().cacheHits(),
+                                                     staticFiles.files().cacheMisses()));
+        });
+
+        // In-memory key/value API: exercises body parsing, shared mutable
+        // state across threads, and JSON responses.
+        router.add("GET", "/api/kv", [&](const HttpRequest& request) {
+            const std::string key = request.queryParam("key");
+            return key.empty() ? kvStore.list() : kvStore.get(key);
+        });
+        router.add("POST", "/api/kv", [&](const HttpRequest& request) {
+            return kvStore.put(request);
+        });
+        router.add("DELETE", "/api/kv", [&](const HttpRequest& request) {
+            return kvStore.remove(request.queryParam("key"));
+        });
+
         std::unique_ptr<EventLoop> loop;
         if (config.mode == "reactor") {
-            loop = std::make_unique<ReactorLoop>(config, router, logger);
+            loop = std::make_unique<ReactorLoop>(config, router, logger, metrics);
         }
         else {
             config.mode = "pool";
-            loop = std::make_unique<PoolLoop>(config, router, logger);
+            loop = std::make_unique<PoolLoop>(config, router, logger, metrics);
         }
 
         g_loop = loop.get();

@@ -24,6 +24,8 @@ add_library(server_core STATIC
     src/lru_cache.cpp
     src/logger.cpp
     src/utils.cpp
+    src/metrics.cpp
+    src/api.cpp
 )
 target_include_directories(server_core PUBLIC include)
 target_link_libraries(server_core PUBLIC Threads::Threads)

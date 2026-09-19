@@ -17,6 +17,7 @@ struct HttpRequest {
     bool keepAlive = true;
 
     std::string header(const std::string& name) const;
+    std::string queryParam(const std::string& name) const;
 };
 
 struct HttpResponse {

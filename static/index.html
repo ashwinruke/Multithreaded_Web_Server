@@ -1,20 +1,289 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>root index.html title</title>
-    <link rel="stylesheet" type="text/css" href="style.css">
-    <script src="script.js"></script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>epoll HTTP server — live</title>
+<style>
+  :root {
+    --paper: #eaeef2;
+    --panel: #f6f8fa;
+    --ink: #0d1318;
+    --ink-soft: #55636f;
+    --rule: #c0cad4;
+    --signal: #0a6e52;
+    --alert: #9c4118;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: ui-sans-serif, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 32px 24px 64px; }
+
+  header { border-bottom: 2px solid var(--ink); padding-bottom: 14px; }
+  h1 { font-size: 20px; font-weight: 650; margin: 0 0 4px; letter-spacing: -0.01em; }
+  header p { margin: 0; color: var(--ink-soft); max-width: 62ch; }
+  .runtime {
+    margin-top: 12px; display: flex; flex-wrap: wrap; gap: 6px 20px;
+    font-family: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13px; color: var(--ink-soft);
+  }
+  .runtime b { font-weight: 600; color: var(--ink); }
+  .live { display: inline-flex; align-items: center; gap: 7px; color: var(--signal); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--signal); }
+  .stale .dot, .stale { color: var(--alert); background: none; }
+  .stale .dot { background: var(--alert); }
+
+  .hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 36px; padding: 28px 0; border-bottom: 1px solid var(--rule); }
+  .rate { font-family: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace; font-size: 68px; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -0.03em; }
+  .rate span { font-size: 17px; font-weight: 500; color: var(--ink-soft); letter-spacing: 0; display: block; margin-top: 6px; }
+  .spark { width: 100%; height: 118px; display: block; }
+  .spark-note { font-size: 13px; color: var(--ink-soft); margin: 6px 0 0; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 1px; background: var(--rule); border: 1px solid var(--rule); margin: 28px 0 0; }
+  .cell { background: var(--panel); padding: 14px 16px; }
+  .cell dt { font-size: 13px; color: var(--ink-soft); margin: 0 0 4px; }
+  .cell dd { margin: 0; font-family: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace; font-size: 22px; font-variant-numeric: tabular-nums; }
+
+  h2 { font-size: 16px; font-weight: 650; margin: 40px 0 6px; }
+  h2 + p { margin: 0 0 16px; color: var(--ink-soft); max-width: 68ch; }
+
+  .demo { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 28px; align-items: start; }
+  form { display: flex; flex-wrap: wrap; gap: 8px; }
+  input {
+    flex: 1 1 120px; min-width: 0; padding: 9px 11px; border: 1px solid var(--rule);
+    border-radius: 2px; background: #fff; font: inherit; color: var(--ink);
+  }
+  input:focus-visible, button:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+  button {
+    padding: 9px 16px; border: 1px solid var(--ink); border-radius: 2px;
+    background: var(--ink); color: var(--paper); font: inherit; font-weight: 550; cursor: pointer;
+  }
+  button.ghost { background: transparent; color: var(--ink); border-color: var(--rule); padding: 4px 9px; font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 14px; font-size: 14px; }
+  th { text-align: left; font-weight: 600; font-size: 13px; color: var(--ink-soft); border-bottom: 1px solid var(--rule); padding: 0 8px 6px 0; }
+  td { padding: 7px 8px 7px 0; border-bottom: 1px solid var(--rule); vertical-align: top; word-break: break-word; }
+  td.k { font-family: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace; }
+  .empty { color: var(--ink-soft); font-size: 14px; padding: 12px 0; }
+
+  pre {
+    margin: 0; background: var(--ink); color: #dfe6ec; padding: 14px 16px; border-radius: 2px;
+    font-family: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13px; line-height: 1.55; overflow-x: auto; white-space: pre-wrap; word-break: break-word;
+  }
+  .status-line { font-family: ui-monospace, monospace; font-size: 13px; color: var(--ink-soft); margin: 0 0 8px; }
+  footer { margin-top: 44px; padding-top: 16px; border-top: 1px solid var(--rule); color: var(--ink-soft); font-size: 14px; }
+  footer a { color: var(--ink); }
+  @media (max-width: 760px) {
+    .hero, .demo { grid-template-columns: 1fr; gap: 24px; }
+    .rate { font-size: 52px; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
 </head>
 <body>
-    <h1 id="heading">root index.html body</h1>
-    <button onclick="changeTextColor()">Change text color</button>
-    <img src="image.png">
-    <img src="notfound.png">
+<div class="wrap">
 
-    <form action="/api/user" method="POST">
-        <label for="user">Enter username:</label>
-        <input id="user" type="text" name="username" required>
-        <button type="submit">Submit</button>
-    </form>
+  <header>
+    <h1>epoll HTTP server</h1>
+    <p>An HTTP/1.1 server written from scratch in C++20 — no frameworks. This page is served by that server, and every number below is read live from it through its own JSON API.</p>
+    <div class="runtime">
+      <span class="live" id="live"><span class="dot"></span><span id="liveText">connecting</span></span>
+      <span>mode <b id="mode">—</b></span>
+      <span>threads <b id="threads">—</b></span>
+      <span>uptime <b id="uptime">—</b></span>
+    </div>
+  </header>
+
+  <section class="hero">
+    <div>
+      <div class="rate" id="rps">0<span>requests per second</span></div>
+    </div>
+    <div>
+      <svg class="spark" id="spark" viewBox="0 0 600 118" preserveAspectRatio="none" aria-label="Requests per second over the last 60 seconds"></svg>
+      <p class="spark-note">Last 60 seconds, sampled once per second.</p>
+    </div>
+  </section>
+
+  <dl class="grid">
+    <div class="cell"><dt>Requests served</dt><dd id="total">0</dd></div>
+    <div class="cell"><dt>Open connections</dt><dd id="active">0</dd></div>
+    <div class="cell"><dt>Handler p50</dt><dd id="p50">0 ms</dd></div>
+    <div class="cell"><dt>Handler p99</dt><dd id="p99">0 ms</dd></div>
+    <div class="cell"><dt>Cache hit rate</dt><dd id="hit">0%</dd></div>
+    <div class="cell"><dt>Sent</dt><dd id="bytes">0 B</dd></div>
+    <div class="cell"><dt>2xx / 4xx / 5xx</dt><dd id="codes">0 / 0 / 0</dd></div>
+    <div class="cell"><dt>Connections accepted</dt><dd id="conns">0</dd></div>
+  </dl>
+
+  <h2>Try the API</h2>
+  <p>Store a value below. It is held in memory by the running server, shared across every worker thread, and served back through the same routing table that produced this page.</p>
+
+  <div class="demo">
+    <div>
+      <form id="kvForm">
+        <input id="key" placeholder="key" maxlength="64" required>
+        <input id="value" placeholder="value" maxlength="256" required>
+        <button type="submit">Store</button>
+      </form>
+      <table>
+        <thead><tr><th>Key</th><th>Value</th><th></th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <div class="empty" id="empty">Nothing stored yet.</div>
+    </div>
+    <div>
+      <p class="status-line" id="apiStatus">POST /api/kv</p>
+      <pre id="apiOut">Waiting for a request.</pre>
+    </div>
+  </div>
+
+  <h2>Push it harder</h2>
+  <p>The counters above respond to real load. Point a benchmark at this server and watch them move:</p>
+  <pre id="wrkCmd">wrk -t4 -c200 -d15s --latency http://127.0.0.1:8080/demo/index.html</pre>
+
+  <footer>
+    <a href="/demo/index.html">Static demo page</a> · <a href="/api/stats">/api/stats</a> · <a href="/api/kv">/api/kv</a> · <a href="/healthz">/healthz</a>
+  </footer>
+</div>
+
+<script>
+const history = new Array(60).fill(0);
+let previousTotal = null, previousAt = null, failures = 0;
+
+const fmt = new Intl.NumberFormat();
+function bytes(n) {
+  const units = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? n : n.toFixed(1)) + " " + units[i];
+}
+function duration(ms) {
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h ? `${h}h ${m}m` : m ? `${m}m ${s % 60}s` : `${s}s`;
+}
+
+function drawSpark() {
+  const peak = Math.max(10, ...history);
+  const step = 600 / (history.length - 1);
+  let line = "", area = "M 0 118 ";
+  history.forEach((v, i) => {
+    const x = (i * step).toFixed(1);
+    const y = (118 - (v / peak) * 108).toFixed(1);
+    line += (i ? " L " : "M ") + x + " " + y;
+    area += "L " + x + " " + y + " ";
+  });
+  area += `L 600 118 Z`;
+  document.getElementById("spark").innerHTML =
+    `<path d="${area}" fill="rgba(10,110,82,0.12)"/>` +
+    `<path d="${line}" fill="none" stroke="#0a6e52" stroke-width="2" stroke-linejoin="round"/>`;
+}
+
+function setLive(ok, text) {
+  const el = document.getElementById("live");
+  el.classList.toggle("stale", !ok);
+  document.getElementById("liveText").textContent = text;
+}
+
+async function poll() {
+  try {
+    const res = await fetch("/api/stats", { cache: "no-store" });
+    const s = await res.json();
+    const now = performance.now();
+
+    if (previousTotal !== null && now > previousAt) {
+      const rate = (s.totalRequests - previousTotal) / ((now - previousAt) / 1000);
+      history.push(Math.max(0, Math.round(rate)));
+      history.shift();
+      document.getElementById("rps").firstChild.textContent = fmt.format(history[history.length - 1]);
+      drawSpark();
+    }
+    previousTotal = s.totalRequests;
+    previousAt = now;
+
+    document.getElementById("mode").textContent = s.mode;
+    document.getElementById("threads").textContent = s.threads;
+    document.getElementById("uptime").textContent = duration(s.uptimeMs);
+    document.getElementById("total").textContent = fmt.format(s.totalRequests);
+    document.getElementById("active").textContent = fmt.format(s.activeConnections);
+    document.getElementById("conns").textContent = fmt.format(s.totalConnections);
+    document.getElementById("p50").textContent = s.latencyMs.p50.toFixed(2) + " ms";
+    document.getElementById("p99").textContent = s.latencyMs.p99.toFixed(2) + " ms";
+    document.getElementById("hit").textContent = s.cache.hitRate.toFixed(1) + "%";
+    document.getElementById("bytes").textContent = bytes(s.bytesOut);
+    document.getElementById("codes").textContent =
+      `${fmt.format(s.status.ok)} / ${fmt.format(s.status.clientError)} / ${fmt.format(s.status.serverError)}`;
+
+    failures = 0;
+    setLive(true, "live");
+  } catch (err) {
+    failures++;
+    if (failures > 2) setLive(false, "server unreachable");
+  }
+}
+
+function renderRows(entries) {
+  const body = document.getElementById("rows");
+  document.getElementById("empty").style.display = entries.length ? "none" : "block";
+  body.innerHTML = "";
+  for (const entry of entries) {
+    const tr = document.createElement("tr");
+    const k = document.createElement("td"); k.className = "k"; k.textContent = entry.key;
+    const v = document.createElement("td"); v.textContent = entry.value;
+    const actions = document.createElement("td");
+    const del = document.createElement("button");
+    del.className = "ghost"; del.textContent = "Delete";
+    del.onclick = () => call("DELETE", "/api/kv?key=" + encodeURIComponent(entry.key));
+    actions.appendChild(del);
+    tr.append(k, v, actions);
+    body.appendChild(tr);
+  }
+}
+
+async function call(method, path, body) {
+  const options = { method, cache: "no-store" };
+  if (body) {
+    options.headers = { "Content-Type": "application/json" };
+    options.body = JSON.stringify(body);
+  }
+  const res = await fetch(path, options);
+  const text = await res.text();
+  document.getElementById("apiStatus").textContent = `${method} ${path} → ${res.status} ${res.statusText}`;
+  document.getElementById("apiOut").textContent = text;
+  await loadEntries();
+}
+
+async function loadEntries() {
+  const res = await fetch("/api/kv", { cache: "no-store" });
+  const data = await res.json();
+  renderRows(data.entries || []);
+}
+
+document.getElementById("kvForm").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const key = document.getElementById("key").value.trim();
+  const value = document.getElementById("value").value.trim();
+  if (!key) return;
+  call("POST", "/api/kv", { key, value });
+  document.getElementById("key").value = "";
+  document.getElementById("value").value = "";
+  document.getElementById("key").focus();
+});
+
+document.getElementById("wrkCmd").textContent =
+  `wrk -t4 -c200 -d15s --latency ${location.origin}/demo/index.html`;
+
+drawSpark();
+poll();
+loadEntries();
+setInterval(poll, 1000);
+</script>
 </body>
 </html>

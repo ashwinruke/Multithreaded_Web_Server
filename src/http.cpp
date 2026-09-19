@@ -1,4 +1,5 @@
 #include "http.h"
+#include "api.h"
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -37,8 +38,26 @@ const char* statusMessage(int statusCode) {
         case 500: return "Internal Server Error";
         case 501: return "Not Implemented";
         case 505: return "HTTP Version Not Supported";
+        case 507: return "Insufficient Storage";
         default:  return "Unknown";
     }
+}
+
+std::string HttpRequest::queryParam(const std::string& name) const {
+    size_t position = 0;
+    while (position < query.size()) {
+        const size_t amp = query.find('&', position);
+        const std::string pair = query.substr(position, amp == std::string::npos ? std::string::npos : amp - position);
+        const size_t equals = pair.find('=');
+        if (equals != std::string::npos && pair.substr(0, equals) == name) {
+            return urlDecode(pair.substr(equals + 1));
+        }
+        if (amp == std::string::npos) {
+            break;
+        }
+        position = amp + 1;
+    }
+    return "";
 }
 
 std::string HttpRequest::header(const std::string& name) const {

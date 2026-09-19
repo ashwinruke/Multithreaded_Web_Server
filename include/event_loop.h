@@ -1,6 +1,7 @@
 #pragma once
 #include "connection_handler.h"
 #include "logger.h"
+#include "metrics.h"
 #include "router.h"
 #include <atomic>
 #include <chrono>
@@ -34,7 +35,7 @@ public:
 // guarantees only one worker owns a connection at any moment.
 class PoolLoop : public EventLoop {
 public:
-    PoolLoop(const ServerConfig& config, Router& router, Logger& logger);
+    PoolLoop(const ServerConfig& config, Router& router, Logger& logger, Metrics& metrics);
     ~PoolLoop() override;
 
     bool run() override;
@@ -48,6 +49,7 @@ private:
 
     ServerConfig config;
     Logger& logger;
+    Metrics& metrics;
     ConnectionHandler handler;
 
     int epollFd = -1;
@@ -76,7 +78,7 @@ private:
 // connections and no lock is needed on the data path.
 class ReactorLoop : public EventLoop {
 public:
-    ReactorLoop(const ServerConfig& config, Router& router, Logger& logger);
+    ReactorLoop(const ServerConfig& config, Router& router, Logger& logger, Metrics& metrics);
     ~ReactorLoop() override;
 
     bool run() override;
@@ -92,6 +94,7 @@ private:
 
     ServerConfig config;
     Logger& logger;
+    Metrics& metrics;
     ConnectionHandler handler;
     std::atomic<bool> running{false};
     std::vector<std::unique_ptr<Reactor>> reactors;

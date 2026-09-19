@@ -10,7 +10,6 @@ public:
     StaticFileHandler(std::string staticRoot, int cacheCapacity);
     HttpResponse operator()(const HttpRequest& request);
     const FileManager& files() const { return fileManager; }
-    FileManager& files() { return fileManager; }
 
 private:
     std::string staticRoot;

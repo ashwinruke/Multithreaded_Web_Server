@@ -3,8 +3,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-ConnectionHandler::ConnectionHandler(Router& router, Logger& logger)
-    : router(router), logger(logger) {}
+ConnectionHandler::ConnectionHandler(Router& router, Logger& logger, Metrics& metrics)
+    : router(router), logger(logger), metrics(metrics) {}
 
 void ConnectionHandler::appendResponse(Connection& connection, const HttpRequest& request, HttpResponse response) {
     response.keepAlive = response.keepAlive && request.keepAlive;
@@ -52,14 +52,20 @@ ConnectionHandler::Action ConnectionHandler::onReadable(Connection& connection) 
         if (result == RequestParser::Result::Error) {
             HttpRequest bad = connection.parser.request();
             bad.keepAlive = false;
-            appendResponse(connection, bad, HttpResponse::error(connection.parser.errorStatus()));
+            const HttpResponse errorResponse = HttpResponse::error(connection.parser.errorStatus());
+            metrics.recordRequest(errorResponse.status, errorResponse.body.size(), 0);
+            appendResponse(connection, bad, errorResponse);
             connection.closeAfterWrite = true;
             connection.readBuffer.clear();
             break;
         }
 
         const HttpRequest& request = connection.parser.request();
+        const auto handlerStart = std::chrono::steady_clock::now();
         HttpResponse response = router.route(request);
+        const auto handlerMicros = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - handlerStart).count();
+        metrics.recordRequest(response.status, response.body.size(), static_cast<uint64_t>(handlerMicros));
         appendResponse(connection, request, response);
         const bool keepGoing = !connection.closeAfterWrite;
         connection.parser.reset();

@@ -13,8 +13,8 @@ namespace {
 constexpr int kMaxEvents = 256;
 }
 
-ReactorLoop::ReactorLoop(const ServerConfig& config, Router& router, Logger& logger)
-    : config(config), logger(logger), handler(router, logger) {}
+ReactorLoop::ReactorLoop(const ServerConfig& config, Router& router, Logger& logger, Metrics& metrics)
+    : config(config), logger(logger), metrics(metrics), handler(router, logger, metrics) {}
 
 ReactorLoop::~ReactorLoop() {
     stop();
@@ -104,6 +104,7 @@ void ReactorLoop::reactorLoop(Reactor& reactor) {
                     ::setsockopt(clientFd, IPPROTO_TCP, TCP_NODELAY, &noDelay, sizeof(noDelay));
 
                     reactor.connections[clientFd] = std::make_shared<Connection>(clientFd);
+                    metrics.connectionOpened();
                     epoll_event clientEvent{};
                     clientEvent.events = EPOLLIN;
                     clientEvent.data.fd = clientFd;
@@ -156,6 +157,7 @@ void ReactorLoop::closeConnection(Reactor& reactor, int fd) {
     }
     ::epoll_ctl(reactor.epollFd, EPOLL_CTL_DEL, fd, nullptr);
     ::close(fd);
+    metrics.connectionClosed();
 }
 
 void ReactorLoop::sweepIdleConnections(Reactor& reactor) {

@@ -13,8 +13,8 @@ namespace {
 constexpr int kMaxEvents = 256;
 }
 
-PoolLoop::PoolLoop(const ServerConfig& config, Router& router, Logger& logger)
-    : config(config), logger(logger), handler(router, logger) {}
+PoolLoop::PoolLoop(const ServerConfig& config, Router& router, Logger& logger, Metrics& metrics)
+    : config(config), logger(logger), metrics(metrics), handler(router, logger, metrics) {}
 
 PoolLoop::~PoolLoop() {
     stop();
@@ -101,6 +101,7 @@ void PoolLoop::acceptLoop() {
                         std::lock_guard<std::mutex> lock(connectionsMutex);
                         connections[clientFd] = std::make_shared<Connection>(clientFd);
                     }
+                    metrics.connectionOpened();
 
                     epoll_event clientEvent{};
                     clientEvent.events = EPOLLIN | EPOLLONESHOT;
@@ -202,6 +203,7 @@ void PoolLoop::closeConnection(int fd) {
     }
     ::epoll_ctl(epollFd, EPOLL_CTL_DEL, fd, nullptr);
     ::close(fd);
+    metrics.connectionClosed();
 }
 
 void PoolLoop::sweepIdleConnections() {
@@ -243,6 +245,7 @@ void PoolLoop::stop() {
     }
     for (int fd : open) {
         ::close(fd);
+        metrics.connectionClosed();
     }
     if (listenFd >= 0) {
         ::close(listenFd);

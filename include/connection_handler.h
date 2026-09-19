@@ -1,6 +1,7 @@
 #pragma once
 #include "connection.h"
 #include "logger.h"
+#include "metrics.h"
 #include "router.h"
 
 // Protocol logic shared by both event loops: drain the socket, parse whatever
@@ -10,7 +11,7 @@ class ConnectionHandler {
 public:
     enum class Action { WaitRead, WaitWrite, Close };
 
-    ConnectionHandler(Router& router, Logger& logger);
+    ConnectionHandler(Router& router, Logger& logger, Metrics& metrics);
 
     Action onReadable(Connection& connection);
     Action onWritable(Connection& connection);
@@ -18,6 +19,7 @@ public:
 private:
     Router& router;
     Logger& logger;
+    Metrics& metrics;
 
     Action flush(Connection& connection);
     void appendResponse(Connection& connection, const HttpRequest& request, HttpResponse response);
