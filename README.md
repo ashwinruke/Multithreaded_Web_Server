@@ -1,5 +1,7 @@
 # Multi-threaded HTTP Server (C++)
 
+[![CI](https://github.com/ashwinruke/Multithreaded_Web_Server/actions/workflows/ci.yml/badge.svg)](https://github.com/ashwinruke/Multithreaded_Web_Server/actions/workflows/ci.yml)
+
 An HTTP/1.1 server written from scratch in C++20 — no web frameworks, no HTTP
 libraries. Non-blocking sockets, an `epoll` event loop in two interchangeable
 concurrency models, an incremental request parser, keep-alive, routing, an LRU
@@ -134,6 +136,20 @@ path.
 O(1) and invalidates no iterators, so the map stores iterators directly and
 eviction from the back is O(1).
 
+## Tests
+
+```bash
+ctest --test-dir build --output-on-failure   # 82 unit tests
+./tests/smoke_test.sh                        # 38 end-to-end checks, both modes
+```
+
+Unit tests cover the parser, router, LRU cache, JSON/form decoding, the key
+value store, static file handling and metrics; the smoke test drives a real
+server over a socket, including pipelining, fragmented requests, keep-alive
+reuse and SIGTERM shutdown. Every push runs both, plus the full suite under
+AddressSanitizer, UndefinedBehaviorSanitizer and ThreadSanitizer. See
+[`tests/README.md`](tests/README.md).
+
 ## Benchmarks
 
 ```bash
@@ -141,7 +157,72 @@ eviction from the back is O(1).
 ```
 
 Sweeps both modes at 1/2/4/8 threads plus an nginx baseline on the same file,
-and writes `bench/results.md` with req/sec and p50/p95/p99.
+and writes [`bench/results.md`](bench/results.md).
+
+**Environment.** 8-core WSL2 (Linux 6.18, Ubuntu), `wrk -t4 -c200 -d15s`,
+keep-alive, serving a 585-byte static file. The load generator shares the host
+with the server, so absolute numbers run lower than a two-machine setup would
+produce; the comparison between configurations is the point.
+
+![Throughput scaling and tail latency for both event-loop modes](bench/scaling.png)
+
+| Configuration       | req/sec     | p50      | p90      | p99      |
+|---------------------|-------------|----------|----------|----------|
+| pool, 1 worker      |   13,890    | 14.29ms  | 17.28ms  | 22.65ms  |
+| pool, 2 workers     |   39,667    |  4.71ms  |  6.71ms  | 10.06ms  |
+| pool, 4 workers     |   95,422    |  1.72ms  |  3.62ms  |  6.18ms  |
+| pool, 8 workers     |  108,293    |  1.40ms  |  3.36ms  |  9.37ms  |
+| reactor, 1 thread   |   13,000    | 14.98ms  | 17.70ms  | 22.81ms  |
+| reactor, 2 threads  |   34,274    |  5.68ms  |  7.13ms  |  9.98ms  |
+| reactor, 4 threads  |   98,449    |  1.75ms  |  3.67ms  |  6.16ms  |
+| **reactor, 8 threads** | **138,972** | **1.02ms** | 3.92ms | 8.13ms |
+| nginx (baseline)    |  207,059    |  0.47ms  |  2.92ms  |  6.49ms  |
+
+**Sustained load.** A separate 60-second run at 1,400 concurrent keep-alive
+connections (`wrk -t8 -c1400 -d60s`, reactor mode, 8 threads) served 7,547,408
+requests at 125,594 req/sec and 11.20ms average latency, transferring 4.74 GB
+with no socket errors and no connection leaks — active connections returned to
+zero after the idle sweep. Holding 1,400 connections open matters more than
+peak throughput: it is the property that separates an event loop from a
+thread-per-connection design.
+
+### What the numbers show
+
+**The reactor model wins once contention appears, not before.** At 1–4 threads
+the two models are within noise, and the pool is marginally ahead at 2. At 8
+threads the reactor is 28% faster (138,972 vs 108,293 req/sec) with a lower p50.
+The cause is structural: the pool routes every ready connection through one
+shared work queue behind a mutex, and at ~100k req/sec that queue is contended
+on every request. Each reactor instead owns its own `epoll` instance and
+connection table, with `SO_REUSEPORT` letting the kernel distribute new
+connections, so there is no shared mutable state on the data path.
+
+**Scaling is near-linear to 4 threads, then flattens.** The pool's 4→8 step
+returns only 13% more throughput while the reactor's returns 41% — on identical
+hardware, running identical handler code. That contrast is the evidence that the
+pool's ceiling is contention rather than CPU.
+
+**Tail latency is not monotonic with throughput.** Both models post their best
+p99 at 4 threads (6.18ms and 6.16ms) and get worse at 8 despite serving more
+requests — the pool notably so, at 9.37ms. More threads than cores means
+preemption mid-request, and for the pool it also means longer queue waits. If
+p99 mattered more than raw throughput, 4 threads would be the right setting for
+this machine.
+
+**nginx is ~1.5× faster, and the gap is instructive.** nginx serves this file
+with `sendfile()`, copying from page cache straight to the socket inside the
+kernel. This server reads the file into its LRU cache, copies the content into a
+response buffer, then writes it — two userspace copies nginx never makes.
+Closing most of that gap means `sendfile()` for static responses plus a
+scatter-gather `writev()` for header and body, which is a deliberate next step
+rather than a tuning knob.
+
+### Configuration guidance
+
+`--mode reactor --threads $(nproc)` for throughput. `--mode pool --threads 4`
+when bounded tail latency matters more: the pool's fixed worker count caps how
+many handlers run at once, while the reactor will happily occupy every thread
+with a slow handler.
 
 ## Portability
 
@@ -156,5 +237,6 @@ already the seam where that would go.
 - [x] Routing table with 405/Allow handling
 - [x] Live metrics dashboard at `/` and `/api/stats`
 - [x] In-memory JSON API endpoints
-- [ ] Unit tests (GoogleTest) and GitHub Actions CI
-- [ ] Published benchmark results vs nginx
+- [x] Unit tests (GoogleTest) and GitHub Actions CI
+- [x] Published benchmark results vs nginx
+- [ ] `sendfile()` for static responses
