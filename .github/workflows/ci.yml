@@ -78,3 +78,37 @@ jobs:
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
           TSAN_OPTIONS: halt_on_error=1
         run: ./tests/smoke_test.sh ./build/multithreaded-server
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t epoll-http-server .
+
+      # Mirrors how Render runs it: configuration only through environment
+      # variables, with the host choosing the port.
+      - name: Run container
+        run: docker run -d --name server -e PORT=10000 -p 10000:10000 epoll-http-server
+
+      - name: Probe running container
+        run: |
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:10000/healthz && break
+            sleep 1
+          done
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:10000/)" = 200
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:10000/demo/index.html)" = 200
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST -d 'key=ci&value=ok' http://127.0.0.1:10000/api/kv)" = 201
+          curl -fsS http://127.0.0.1:10000/api/stats
+
+      - name: Graceful stop
+        run: |
+          docker stop --time 10 server
+          test "$(docker inspect -f '{{.State.ExitCode}}' server)" = 0
+
+      - name: Container logs
+        if: always()
+        run: docker logs server || true

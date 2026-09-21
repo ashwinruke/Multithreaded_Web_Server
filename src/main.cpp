@@ -7,6 +7,7 @@
 #include "utils.h"
 #include <atomic>
 #include <csignal>
+#include <cstdlib>
 #include <iostream>
 #include <memory>
 
@@ -23,14 +24,26 @@ void handleSignal(int) {
 
 int main(int argc, char** argv) {
     try {
+        // Configuration precedence, lowest to highest:
+        //   built-in defaults < .env file < process environment < CLI flags
+        // The process environment is how container hosts configure a
+        // service; most also inject PORT and expect the server to bind it.
         auto env = parseEnvFile(projectRoot() + "/.env");
+        for (const char* name : {"SERVER_IP", "SERVER_PORT", "PORT", "MAX_THREADS",
+                                 "CACHE_CAPACITY", "IDLE_TIMEOUT", "LOOP_MODE"}) {
+            if (const char* value = std::getenv(name); value != nullptr && *value != '\0') {
+                env[name] = value;
+            }
+        }
+
         ServerConfig config;
-        if (env.count("SERVER_IP"))     config.ip = env["SERVER_IP"];
-        if (env.count("SERVER_PORT"))   config.port = envStrToInt(env["SERVER_PORT"]);
-        if (env.count("MAX_THREADS"))   config.threads = envStrToInt(env["MAX_THREADS"]);
+        if (env.count("SERVER_IP"))      config.ip = env["SERVER_IP"];
+        if (env.count("SERVER_PORT"))    config.port = envStrToInt(env["SERVER_PORT"]);
+        if (env.count("PORT"))           config.port = envStrToInt(env["PORT"]);
+        if (env.count("MAX_THREADS"))    config.threads = envStrToInt(env["MAX_THREADS"]);
         if (env.count("CACHE_CAPACITY")) config.cacheCapacity = envStrToInt(env["CACHE_CAPACITY"]);
-        if (env.count("IDLE_TIMEOUT"))  config.idleTimeoutSeconds = envStrToInt(env["IDLE_TIMEOUT"]);
-        if (env.count("LOOP_MODE"))     config.mode = env["LOOP_MODE"];
+        if (env.count("IDLE_TIMEOUT"))   config.idleTimeoutSeconds = envStrToInt(env["IDLE_TIMEOUT"]);
+        if (env.count("LOOP_MODE"))      config.mode = env["LOOP_MODE"];
 
         // CLI overrides make benchmark sweeps scriptable:
         //   ./multithreaded-server --mode reactor --threads 8 --port 8081
@@ -92,11 +105,11 @@ int main(int argc, char** argv) {
         std::signal(SIGPIPE, SIG_IGN);
 
         std::cout << "mode=" << config.mode << " threads=" << config.threads
-                  << "  http://" << config.ip << ":" << config.port << "\n";
+                  << "  http://" << config.ip << ":" << config.port << std::endl;
 
         const bool ok = loop->run();
         g_loop = nullptr;
-        std::cout << "shut down\n";
+        std::cout << "shut down" << std::endl;
         return ok ? EXIT_SUCCESS : EXIT_FAILURE;
     }
     catch (const std::exception& err) {

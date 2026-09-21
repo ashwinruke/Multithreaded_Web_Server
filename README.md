@@ -7,6 +7,11 @@ libraries. Non-blocking sockets, an `epoll` event loop in two interchangeable
 concurrency models, an incremental request parser, keep-alive, routing, an LRU
 file cache and an asynchronous logger.
 
+**Live demo:** https://epoll-http-server.onrender.com — the dashboard reads the
+server's own metrics in real time, and the key/value panel writes to its
+in-memory store. It runs on a free instance that sleeps when idle, so the first
+visit can take up to a minute to wake.
+
 ## Build
 
 Requires g++ 13+ (C++20), CMake 3.25+, Linux (`epoll` and `SO_REUSEPORT` are
@@ -280,6 +285,32 @@ when bounded tail latency matters more: the pool's fixed worker count caps how
 many handlers run at once, while the reactor will happily occupy every thread
 with a slow handler.
 
+## Deployment
+
+The repo ships a multi-stage `Dockerfile`: the build stage compiles with tests
+disabled (CI runs them), and the runtime stage carries only the binary and
+`static/`, running as an unprivileged user.
+
+```bash
+docker build -t epoll-http-server .
+docker run -p 8080:8080 epoll-http-server
+```
+
+Configuration is layered, lowest to highest precedence: built-in defaults, the
+`.env` file, process environment variables, then command-line flags. Container
+hosts configure services through the environment, and most inject a `PORT` the
+server must bind, so the image defaults to `SERVER_IP=0.0.0.0` and honours
+`PORT` when set.
+
+`render.yaml` deploys it to Render as a Blueprint, with `/healthz` as the health
+check. SIGTERM, which is how the platform stops a container on redeploy, closes
+connections and joins every thread before exiting with status 0. CI builds the
+image and probes the running container on every push.
+
+The public instance is a small shared container, so it demonstrates behaviour,
+not performance. Every benchmark figure in this README was measured locally, on
+the hardware described alongside it.
+
 ## Portability
 
 Linux only. `epoll` has no portable equivalent; `kqueue` (BSD/macOS) or IOCP
@@ -296,8 +327,13 @@ already the seam where that would go.
 - [x] Unit tests (GoogleTest) and GitHub Actions CI
 - [x] Published benchmark results vs nginx
 - [x] Realistic workload matrix (large files, dynamic, writes, churn, mixed)
+- [x] Docker image, public deployment, container checks in CI
 - [ ] Take the filesystem off the static hot path: lexical path normalization,
       cache keyed by request path
 - [ ] Remove redundant copies: shared immutable cache entries, `writev()` for
       header plus body, `sendfile()` for large files
 - [ ] Median-of-three benchmark runs to separate signal from host noise
+
+## License
+
+MIT — see [LICENSE](LICENSE).

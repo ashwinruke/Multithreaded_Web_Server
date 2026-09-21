@@ -145,11 +145,11 @@
   </div>
 
   <h2>Push it harder</h2>
-  <p>The counters above respond to real load. Point a benchmark at this server and watch them move:</p>
+  <p id="loadNote">The counters above respond to real load. Point a benchmark at this server and watch them move:</p>
   <pre id="wrkCmd">wrk -t4 -c200 -d15s --latency http://127.0.0.1:8080/demo/index.html</pre>
 
   <footer>
-    <a href="/demo/index.html">Static demo page</a> · <a href="/api/stats">/api/stats</a> · <a href="/api/kv">/api/kv</a> · <a href="/healthz">/healthz</a>
+    <a href="https://github.com/ashwinruke/Multithreaded_Web_Server">Source on GitHub</a> · <a href="/demo/index.html">Static demo page</a> · <a href="/api/stats">/api/stats</a> · <a href="/api/kv">/api/kv</a> · <a href="/healthz">/healthz</a>
   </footer>
 </div>
 
@@ -277,8 +277,23 @@ document.getElementById("kvForm").addEventListener("submit", (event) => {
   document.getElementById("key").focus();
 });
 
-document.getElementById("wrkCmd").textContent =
-  `wrk -t4 -c200 -d15s --latency ${location.origin}/demo/index.html`;
+const isLocal = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+if (isLocal) {
+  document.getElementById("wrkCmd").textContent =
+    `wrk -t4 -c200 -d15s --latency ${location.origin}/demo/index.html`;
+} else {
+  // A shared free-tier container is nowhere near the hardware the published
+  // numbers came from, so point visitors at those instead of inviting a load
+  // test that would only measure the host's throttling.
+  document.getElementById("loadNote").innerHTML =
+    'This public instance runs on a small shared container, so its throughput reflects the host, not the server. ' +
+    'Benchmarks were measured on an 8-core machine: up to 139k requests/sec, and 1,400 concurrent connections sustained. ' +
+    '<a href="https://github.com/ashwinruke/Multithreaded_Web_Server#benchmarks">Full results and methodology</a>.';
+  document.getElementById("wrkCmd").textContent =
+    "git clone https://github.com/ashwinruke/Multithreaded_Web_Server\n" +
+    "cd Multithreaded_Web_Server && cmake -B build && cmake --build build -j\n" +
+    "./build/multithreaded-server --mode reactor --threads $(nproc)";
+}
 
 drawSpark();
 poll();

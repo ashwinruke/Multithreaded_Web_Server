@@ -1,0 +1,10 @@
+.git
+.github
+build
+build-*
+logs
+bench
+tests
+static/bench-assets
+*.md
+.env

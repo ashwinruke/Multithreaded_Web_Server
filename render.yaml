@@ -1,0 +1,12 @@
+# Render Blueprint: New > Blueprint in the Render dashboard, pick this repo.
+services:
+  - type: web
+    name: epoll-http-server
+    runtime: docker
+    plan: free
+    healthCheckPath: /healthz
+    envVars:
+      - key: LOOP_MODE
+        value: reactor
+      - key: MAX_THREADS
+        value: "2"
