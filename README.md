@@ -157,7 +157,8 @@ AddressSanitizer, UndefinedBehaviorSanitizer and ThreadSanitizer. See
 ```
 
 Sweeps both modes at 1/2/4/8 threads plus an nginx baseline on the same file,
-and writes [`bench/results.md`](bench/results.md).
+and writes [`bench/results.md`](bench/results.md). `./bench/run_bench.sh workloads`
+runs the workload matrix described below.
 
 **Environment.** 8-core WSL2 (Linux 6.18, Ubuntu), `wrk -t4 -c200 -d15s`,
 keep-alive, serving a 585-byte static file. The load generator shares the host
@@ -190,7 +191,11 @@ thread-per-connection design.
 
 **The reactor model wins once contention appears, not before.** At 1–4 threads
 the two models are within noise, and the pool is marginally ahead at 2. At 8
-threads the reactor is 28% faster (138,972 vs 108,293 req/sec) with a lower p50.
+threads the reactor was 28% faster in this sweep (138,972 vs 108,293 req/sec)
+with a lower p50. A later run of the same configuration in the workload matrix
+below measured a 5% gap, with every server — nginx included — slower that run,
+so the size of the margin depends on the environment. The consistent result is
+that the reactor led in every workload, in every run.
 The cause is structural: the pool routes every ready connection through one
 shared work queue behind a mutex, and at ~100k req/sec that queue is contended
 on every request. Each reactor instead owns its own `epoll` instance and
@@ -217,6 +222,57 @@ Closing most of that gap means `sendfile()` for static responses plus a
 scatter-gather `writev()` for header and body, which is a deliberate next step
 rather than a tuning knob.
 
+### Beyond small static files
+
+A 585-byte cached file measures per-request overhead and nothing else. To see
+how the server behaves under other realistic loads, `./bench/run_bench.sh
+workloads` runs six workloads against both modes at 8 threads, and against nginx
+wherever nginx can serve the same content. Raw output is in
+[`bench/workloads.md`](bench/workloads.md).
+
+| Workload       | pool       | reactor    | nginx      | What it stresses                          |
+|----------------|------------|------------|------------|-------------------------------------------|
+| small static   |  112,581   |  118,259   |  156,549   | Per-request overhead                      |
+| large 1 MiB    |      954   |      938   |    9,405   | Copying bytes rather than syscalls        |
+| dynamic JSON   |  147,742   |  157,238   |     —      | `/api/stats`, built on every request      |
+| POST write     |   99,253   |  118,709   |     —      | Body parsing, mutex on the shared store   |
+| conn churn     |   49,179   |   50,187   |   44,876   | New TCP connection per request            |
+| mixed traffic  |   76,572   |   90,655   |     —      | 60% static, 20% stats, 20% KV reads/writes |
+
+Requests per second; `wrk -t4 -c200 -d15s`, zero errors in every row.
+
+**Connection churn is kernel-bound, and all three servers tie.** With
+`Connection: close`, every request pays a full TCP handshake and teardown. Pool,
+reactor and nginx land within 12% of each other, with this server marginally
+ahead of nginx. `SO_REUSEPORT` does not help here, because distributing accepts
+is not the slow part — setting up the connection is.
+
+**Writes to shared state are cheap.** The reactor handles POSTs to the
+mutex-guarded key/value store (118,709 req/sec) as fast as it serves a cached
+file. The critical section is a single map update, so the lock is held for
+nanoseconds and barely registers against the cost of the request around it.
+
+**Dynamic JSON outruns the static file — which reveals a cost in the static
+path.** A cached file should be the cheapest response a server can produce, yet
+`/api/stats` is 33% faster. The static handler canonicalizes every request path
+with `std::filesystem::weakly_canonical`, which walks the filesystem with an
+`lstat` per path component *before* the cache is consulted, and it then takes
+the file cache's global mutex. The JSON route does neither: a few atomic loads
+and a string build.
+
+**Large files expose the gap to nginx most clearly: 10× rather than 1.3×.** Both
+models converge at ~950 req/sec because the event loop no longer matters — the
+work is copying bytes. A 1 MiB cached response is currently copied roughly six
+times on its way out (cache → body → handler argument → `ostringstream` →
+`.str()` → write buffer), about 5.6 GB/s of `memcpy` to deliver 0.93 GB/s.
+nginx makes zero userspace copies, handing the file to the kernel with
+`sendfile()`. The reactor's p99 is also worse here (437 ms vs 235 ms): a
+reactor thread working through several megabyte-sized copies stalls every other
+connection it owns, while the pool spreads that work across workers.
+
+Both costs are known and deliberately left in place for these measurements; the
+fixes are listed in the roadmap.
+
 ### Configuration guidance
 
 `--mode reactor --threads $(nproc)` for throughput. `--mode pool --threads 4`
@@ -239,4 +295,9 @@ already the seam where that would go.
 - [x] In-memory JSON API endpoints
 - [x] Unit tests (GoogleTest) and GitHub Actions CI
 - [x] Published benchmark results vs nginx
-- [ ] `sendfile()` for static responses
+- [x] Realistic workload matrix (large files, dynamic, writes, churn, mixed)
+- [ ] Take the filesystem off the static hot path: lexical path normalization,
+      cache keyed by request path
+- [ ] Remove redundant copies: shared immutable cache entries, `writev()` for
+      header plus body, `sendfile()` for large files
+- [ ] Median-of-three benchmark runs to separate signal from host noise

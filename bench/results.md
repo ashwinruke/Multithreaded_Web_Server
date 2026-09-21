@@ -1,17 +1,17 @@
-# Benchmark results
+# Thread-scaling sweep
 
 - Host: 8 cores, Linux 6.18.33.2-microsoft-standard-WSL2
-- wrk: -t4 -c200 -d15s, static `index.html`, keep-alive
-- Date: 2026-09-19 16:10 UTC
+- wrk: -t4 -c200 -d15s, `/demo/index.html` (585 B, cached), keep-alive
+- Date: 2026-09-21 13:07 UTC
 
-| Configuration          | req/sec    | p50      | p75      | p90      | p99      |
-|------------------------|------------|----------|----------|----------|----------|
-| pool, 1 workers        |   13630.84 |  14.28ms |  15.04ms |  16.30ms |  20.32ms |
-| pool, 2 workers        |   34369.52 |   5.57ms |   6.25ms |   7.14ms |   9.57ms |
-| pool, 4 workers        |   87563.28 |   1.88ms |   2.55ms |   3.71ms |   7.38ms |
-| pool, 8 workers        |  112068.83 |   1.34ms |   2.12ms |   3.20ms |   8.87ms |
-| reactor, 1 threads     |   13858.47 |  13.83ms |  14.84ms |  16.63ms |  24.26ms |
-| reactor, 2 threads     |   24215.43 |   7.24ms |   9.80ms |  14.53ms |  32.24ms |
-| reactor, 4 threads     |   82298.24 |   2.06ms |   2.83ms |   4.44ms |  13.02ms |
-| reactor, 8 threads     |  114931.27 |   1.22ms |   2.91ms |   4.97ms |  12.60ms |
-| nginx (baseline)       |  190590.96 | 472.00us |   1.53ms |   3.36ms |   8.38ms |
+| Configuration      | Server           | req/sec    | transfer   | p50      | p99      | errors  |
+|--------------------|------------------|------------|------------|----------|----------|---------|
+| 1 threads          | pool             |   19311.57 |    12.41MB |  10.07ms |  13.22ms |       0 |
+| 2 threads          | pool             |   39213.55 |    25.21MB |   4.97ms |   6.46ms |       0 |
+| 4 threads          | pool             |   84376.22 |    54.24MB |   1.98ms |   6.47ms |       0 |
+| 8 threads          | pool             |  112179.30 |    72.11MB |   1.35ms |   5.64ms |       0 |
+| 1 threads          | reactor          |   15391.88 |     9.89MB |  11.88ms |  24.84ms |       0 |
+| 2 threads          | reactor          |   35410.26 |    22.76MB |   5.54ms |   9.10ms |       0 |
+| 4 threads          | reactor          |   73698.35 |    47.37MB |   2.50ms |   7.65ms |       0 |
+| 8 threads          | reactor          |  121869.26 |    78.33MB |   1.13ms |  12.87ms |       0 |
+| auto               | nginx            |  151420.61 |   118.85MB | 659.00us |   8.70ms |       0 |
