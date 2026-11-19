@@ -12,6 +12,33 @@ server's own metrics in real time, and the key/value panel writes to its
 in-memory store. It runs on a free instance that sleeps when idle, so the first
 visit can take up to a minute to wake.
 
+### Try it
+
+```bash
+URL=https://epoll-http-server.onrender.com
+
+curl --max-time 90 -i $URL/healthz              # first call may wake the instance
+curl -s $URL/api/stats                          # live metrics as JSON
+
+curl -s -X POST -H 'Content-Type: application/json' \
+     -d '{"key":"hello","value":"world"}' $URL/api/kv     # 201 Created
+curl -s "$URL/api/kv?key=hello"                  # read it back
+curl -s -X DELETE "$URL/api/kv?key=hello"        # remove it
+
+curl -s -o /dev/null -w '%{http_code}\n' $URL/nope.html       # 404
+curl -s -o /dev/null -w '%{http_code}\n' -X PUT $URL/healthz  # 405, with Allow header
+```
+
+Keep the dashboard open while running these and the counters move with each
+request. The key/value store is shared by every visitor, capped at 50 entries,
+and cleared whenever the instance sleeps.
+
+Render terminates HTTPS at its own proxy and forwards plain HTTP to the
+container, so requests from outside exercise the routing, handlers and store,
+but not connection-level behaviour: keep-alive, pipelining and connection counts
+are measured by the proxy there, not by this server. Those are covered by the
+local smoke test and CI instead.
+
 ## Build
 
 Requires g++ 13+ (C++20), CMake 3.25+, Linux (`epoll` and `SO_REUSEPORT` are
@@ -316,23 +343,6 @@ the hardware described alongside it.
 Linux only. `epoll` has no portable equivalent; `kqueue` (BSD/macOS) or IOCP
 (Windows) would need a second `EventLoop` implementation. The interface is
 already the seam where that would go.
-
-## Roadmap
-
-- [x] Non-blocking `epoll` core, both concurrency models
-- [x] Incremental parser, keep-alive, pipelining, idle timeouts
-- [x] Routing table with 405/Allow handling
-- [x] Live metrics dashboard at `/` and `/api/stats`
-- [x] In-memory JSON API endpoints
-- [x] Unit tests (GoogleTest) and GitHub Actions CI
-- [x] Published benchmark results vs nginx
-- [x] Realistic workload matrix (large files, dynamic, writes, churn, mixed)
-- [x] Docker image, public deployment, container checks in CI
-- [ ] Take the filesystem off the static hot path: lexical path normalization,
-      cache keyed by request path
-- [ ] Remove redundant copies: shared immutable cache entries, `writev()` for
-      header plus body, `sendfile()` for large files
-- [ ] Median-of-three benchmark runs to separate signal from host noise
 
 ## License
 
